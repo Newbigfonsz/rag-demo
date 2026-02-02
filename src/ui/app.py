@@ -1,4 +1,4 @@
-"""Streamlit Web UI for Mystic RAG."""
+"""Streamlit Web UI with reranking."""
 
 import streamlit as st
 import time
@@ -10,7 +10,7 @@ from src.generation.generator import check_llm_available
 
 @st.cache_resource
 def load_pipeline():
-    return RAGPipeline()
+    return RAGPipeline(use_reranker=True)
 
 def main():
     st.title("🔮 Mystic RAG")
@@ -19,21 +19,19 @@ def main():
     with st.sidebar:
         st.header("Settings")
         top_k = st.slider("Sources", 1, 10, 5)
+        use_memory = st.checkbox("Use conversation memory", True)
         
         st.divider()
         st.header("Examples")
-        examples = [
-            "What does it mean to be a Dragon?",
-            "Are Rat and Ox compatible?",
-            "What careers suit Life Path 7?",
-        ]
-        for ex in examples:
+        for ex in ["What does it mean to be a Dragon?", "What careers suit that sign?", "Are Rat and Ox compatible?"]:
             if st.button(ex, use_container_width=True):
                 st.session_state.query = ex
         
         st.divider()
-        if st.button("Clear Chat", use_container_width=True):
+        if st.button("Clear Chat & Memory", use_container_width=True):
             st.session_state.messages = []
+            if "pipeline" in st.session_state:
+                st.session_state.pipeline.clear_memory()
             st.rerun()
     
     if not check_llm_available():
@@ -65,19 +63,17 @@ def main():
         with st.chat_message("assistant"):
             with st.spinner("Thinking..."):
                 start = time.time()
-                response = pipeline.query(user_input, top_k=top_k)
+                response = pipeline.query(user_input, top_k=top_k, use_memory=use_memory)
                 latency = (time.time() - start) * 1000
             
             st.write(response.answer)
             
-            with st.expander(f"Sources ({latency:.0f}ms)"):
+            status = "reranked" if response.reranked else "vector"
+            with st.expander(f"Sources ({latency:.0f}ms, {status})"):
                 for i, s in enumerate(response.sources):
                     st.caption(f"**{s.citation}** ({response.retrieval_scores[i]:.2f})")
             
-            st.session_state.messages.append({
-                "role": "assistant",
-                "content": response.answer,
-            })
+            st.session_state.messages.append({"role": "assistant", "content": response.answer})
 
 if __name__ == "__main__":
     main()
