@@ -21,20 +21,13 @@ class RetrievedChunk:
     
     @property
     def citation(self) -> str:
-        """Format as citation string."""
         if self.headers:
             return f"{self.source_file}: {self.headers}"
         return self.source_file
-    
-    def __repr__(self) -> str:
-        preview = self.content[:60] + "..." if len(self.content) > 60 else self.content
-        return f"RetrievedChunk(score={self.score:.3f}, source={self.source_file})"
 
 
 class HybridRetriever:
-    """
-    Hybrid retrieval using vector similarity + BM25 keyword matching.
-    """
+    """Hybrid retrieval using vector similarity + BM25."""
     
     def __init__(
         self,
@@ -58,7 +51,7 @@ class HybridRetriever:
         top_k: int = None,
         filter_source: Optional[str] = None,
     ) -> list[RetrievedChunk]:
-        """Pure vector similarity search."""
+        """Vector similarity search."""
         top_k = top_k or settings.top_k
         
         query_embedding = self.embedder.embed_text(query)
@@ -74,16 +67,16 @@ class HybridRetriever:
                 ]
             )
         
-        results = self.client.search(
+        results = self.client.query_points(
             collection_name=self.collection_name,
-            query_vector=query_embedding,
+            query=query_embedding,
             limit=top_k,
             query_filter=query_filter,
             with_payload=True,
         )
         
         chunks = []
-        for point in results:
+        for point in results.points:
             chunk = RetrievedChunk(
                 content=point.payload.get("content", ""),
                 source_file=point.payload.get("source_file", ""),
@@ -99,7 +92,7 @@ class HybridRetriever:
         query: str,
         top_k: int = None,
     ) -> list[RetrievedChunk]:
-        """Pure BM25 keyword search."""
+        """BM25 keyword search."""
         top_k = top_k or settings.top_k
         
         query_filter = models.Filter(
@@ -132,39 +125,8 @@ class HybridRetriever:
         return chunks
 
 
-def retrieve(
-    query: str,
-    top_k: int = None,
-    method: str = "vector",
-) -> list[RetrievedChunk]:
-    """Convenience function for retrieval."""
+def retrieve(query: str, top_k: int = None, method: str = "vector") -> list[RetrievedChunk]:
     retriever = HybridRetriever()
-    
     if method == "keyword":
         return retriever.keyword_search(query, top_k=top_k)
-    else:
-        return retriever.vector_search(query, top_k=top_k)
-
-
-if __name__ == "__main__":
-    from rich.console import Console
-    from rich.table import Table
-    
-    console = Console()
-    retriever = HybridRetriever()
-    
-    query = "What are Dragons compatible with?"
-    console.print(f"\n[bold]Query:[/bold] {query}")
-    
-    results = retriever.vector_search(query, top_k=3)
-    
-    table = Table(title="Results")
-    table.add_column("Score", style="cyan", width=8)
-    table.add_column("Source", style="green", width=25)
-    table.add_column("Preview", width=50)
-    
-    for r in results:
-        preview = r.content[:80] + "..."
-        table.add_row(f"{r.score:.3f}", r.citation, preview)
-    
-    console.print(table)
+    return retriever.vector_search(query, top_k=top_k)
