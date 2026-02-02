@@ -1,46 +1,70 @@
-"""
-Complete RAG pipeline combining retrieval and generation.
-"""
+"""RAG pipeline with reranking and memory."""
 
 from dataclasses import dataclass
-from typing import Optional, Generator as GenType
+from typing import Generator as GenType
 from rich.console import Console
-from rich.panel import Panel
 
 from src.config import settings
 from src.retrieval.retriever import HybridRetriever, RetrievedChunk
-from src.generation.generator import Generator, GeneratedAnswer
+from src.generation.generator import Generator
+
+
+@dataclass
+class Message:
+    role: str
+    content: str
 
 
 @dataclass 
 class RAGResponse:
-    """Complete RAG response."""
     query: str
     answer: str
     sources: list[RetrievedChunk]
     retrieval_scores: list[float]
     model: str
+    reranked: bool = False
 
 
 class RAGPipeline:
-    """End-to-end RAG pipeline."""
-    
-    def __init__(self):
+    def __init__(self, use_reranker: bool = True):
         self.retriever = HybridRetriever()
         self.generator = Generator()
         self.console = Console()
+        self.use_reranker = use_reranker
+        self.reranker = None
+        self.memory: list[Message] = []
+        self.max_memory: int = 10
+        
+        if use_reranker:
+            try:
+                from src.retrieval.reranker import Reranker
+                self.reranker = Reranker()
+            except Exception as e:
+                self.console.print(f"[yellow]Reranker not available: {e}[/yellow]")
+                self.use_reranker = False
     
-    def query(
-        self,
-        question: str,
-        top_k: int = None,
-        show_sources: bool = True,
-    ) -> RAGResponse:
-        """Process a question through the RAG pipeline."""
+    def query(self, question: str, top_k: int = None, use_memory: bool = True, show_sources: bool = True) -> RAGResponse:
         top_k = top_k or settings.rerank_top_k
         
-        chunks = self.retriever.vector_search(question, top_k=top_k)
-        generated = self.generator.generate(question, chunks)
+        retrieve_k = top_k * 3 if self.use_reranker else top_k
+        chunks = self.retriever.vector_search(question, top_k=retrieve_k)
+        
+        reranked = False
+        if self.use_reranker and self.reranker and len(chunks) > top_k:
+            chunks = self.reranker.rerank(question, chunks, top_k=top_k)
+            reranked = True
+        else:
+            chunks = chunks[:top_k]
+        
+        memory_context = self._format_memory() if use_memory and self.memory else ""
+        
+        generated = self.generator.generate(question, chunks, memory_context=memory_context)
+        
+        if use_memory:
+            self.memory.append(Message(role="user", content=question))
+            self.memory.append(Message(role="assistant", content=generated.answer))
+            if len(self.memory) > self.max_memory * 2:
+                self.memory = self.memory[-self.max_memory * 2:]
         
         return RAGResponse(
             query=question,
@@ -48,12 +72,28 @@ class RAGPipeline:
             sources=chunks if show_sources else [],
             retrieval_scores=[c.score for c in chunks],
             model=generated.model,
+            reranked=reranked,
         )
     
+    def _format_memory(self) -> str:
+        if not self.memory:
+            return ""
+        lines = ["Previous conversation:"]
+        for msg in self.memory[-6:]:
+            role = "User" if msg.role == "user" else "Assistant"
+            lines.append(f"{role}: {msg.content[:200]}")
+        return "\n".join(lines)
+    
+    def clear_memory(self):
+        self.memory = []
+    
     def query_streaming(self, question: str, top_k: int = None) -> GenType[str, None, None]:
-        """Process question with streaming response."""
         top_k = top_k or settings.rerank_top_k
-        chunks = self.retriever.vector_search(question, top_k=top_k)
-        
+        retrieve_k = top_k * 3 if self.use_reranker else top_k
+        chunks = self.retriever.vector_search(question, top_k=retrieve_k)
+        if self.use_reranker and self.reranker:
+            chunks = self.reranker.rerank(question, chunks, top_k=top_k)
+        else:
+            chunks = chunks[:top_k]
         for token in self.generator.generate_streaming(question, chunks):
             yield token
