@@ -1,12 +1,14 @@
-"""RAG pipeline with reranking, memory, and multi-LLM support."""
+"""RAG pipeline with analytics tracking."""
 
 from dataclasses import dataclass
 from typing import Generator as GenType
+import time
 from rich.console import Console
 
 from src.config import settings
 from src.retrieval.retriever import HybridRetriever, RetrievedChunk
 from src.generation.generator import Generator
+from src.analytics import QueryMetrics
 
 
 @dataclass
@@ -23,19 +25,15 @@ class RAGResponse:
     retrieval_scores: list[float]
     model: str
     reranked: bool = False
+    latency_ms: float = 0.0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cost_usd: float = 0.0
+    query_id: int = None  # For feedback
 
 
 class RAGPipeline:
-    """RAG pipeline with reranking, memory, and LLM selection."""
-    
     def __init__(self, use_reranker: bool = True, llm_backend: str = "ollama"):
-        """
-        Initialize pipeline.
-        
-        Args:
-            use_reranker: Enable cross-encoder reranking
-            llm_backend: "ollama" (local, free) or "claude" (API, better)
-        """
         self.retriever = HybridRetriever()
         self.llm_backend = llm_backend
         self.generator = Generator(backend=llm_backend)
@@ -54,11 +52,14 @@ class RAGPipeline:
                 self.use_reranker = False
     
     def query(self, question: str, top_k: int = None, use_memory: bool = True, show_sources: bool = True) -> RAGResponse:
+        start_time = time.time()
         top_k = top_k or settings.rerank_top_k
         
+        # Retrieve
         retrieve_k = top_k * 3 if self.use_reranker else top_k
         chunks = self.retriever.vector_search(question, top_k=retrieve_k)
         
+        # Rerank
         reranked = False
         if self.use_reranker and self.reranker and len(chunks) > top_k:
             chunks = self.reranker.rerank(question, chunks, top_k=top_k)
@@ -66,10 +67,32 @@ class RAGPipeline:
         else:
             chunks = chunks[:top_k]
         
+        # Memory context
         memory_context = self._format_memory() if use_memory and self.memory else ""
         
+        # Generate
         generated = self.generator.generate(question, chunks, memory_context=memory_context)
         
+        # Calculate latency
+        latency_ms = (time.time() - start_time) * 1000
+        
+        # Log to analytics
+        metrics = QueryMetrics(
+            query=question,
+            answer=generated.answer,
+            model=generated.model,
+            llm_backend=self.llm_backend,
+            retrieval_scores=[c.score for c in chunks],
+            sources=[c.citation for c in chunks],
+            latency_ms=latency_ms,
+            input_tokens=generated.input_tokens,
+            output_tokens=generated.output_tokens,
+            cost_usd=generated.cost_usd,
+            reranked=reranked,
+        )
+        query_id = metrics.log()
+        
+        # Update memory
         if use_memory:
             self.memory.append(Message(role="user", content=question))
             self.memory.append(Message(role="assistant", content=generated.answer))
@@ -83,6 +106,11 @@ class RAGPipeline:
             retrieval_scores=[c.score for c in chunks],
             model=generated.model,
             reranked=reranked,
+            latency_ms=latency_ms,
+            input_tokens=generated.input_tokens,
+            output_tokens=generated.output_tokens,
+            cost_usd=generated.cost_usd,
+            query_id=query_id,
         )
     
     def _format_memory(self) -> str:
@@ -98,7 +126,6 @@ class RAGPipeline:
         self.memory = []
     
     def switch_llm(self, backend: str):
-        """Switch LLM backend (ollama or claude)."""
         self.llm_backend = backend
         self.generator = Generator(backend=backend)
     

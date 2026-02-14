@@ -1,5 +1,5 @@
 """
-LLM generation with Ollama (local) and Claude (API) support.
+LLM generation with Ollama and Claude support + token tracking.
 """
 
 import os
@@ -14,6 +14,9 @@ class GeneratedAnswer:
     sources: list[RetrievedChunk]
     query: str
     model: str
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cost_usd: float = 0.0
 
 
 SYSTEM_PROMPT = """You are a knowledgeable assistant specializing in Chinese zodiac signs and numerology.
@@ -27,8 +30,6 @@ RULES:
 
 
 class OllamaGenerator:
-    """Local LLM using Ollama."""
-    
     def __init__(self, model: str = None):
         import ollama
         self.ollama = ollama
@@ -38,7 +39,7 @@ class OllamaGenerator:
         context = self._format_context(context_chunks)
         
         if memory_context:
-            prompt = f"{memory_context}\n\n<context>\n{context}\n</context>\n\nQuestion: {query}\n\nAnswer based on context and conversation history."
+            prompt = f"{memory_context}\n\n<context>\n{context}\n</context>\n\nQuestion: {query}\n\nAnswer based on context and history."
         else:
             prompt = f"<context>\n{context}\n</context>\n\nQuestion: {query}\n\nAnswer based on the context."
         
@@ -53,6 +54,9 @@ class OllamaGenerator:
             sources=context_chunks,
             query=query,
             model=f"ollama/{self.model}",
+            input_tokens=response.get("prompt_eval_count", 0),
+            output_tokens=response.get("eval_count", 0),
+            cost_usd=0.0,  # Ollama is free
         )
     
     def _format_context(self, chunks: list[RetrievedChunk]) -> str:
@@ -73,18 +77,18 @@ class OllamaGenerator:
 
 
 class ClaudeGenerator:
-    """Claude API generator."""
-    
     def __init__(self, model: str = "claude-sonnet-4-20250514"):
         import anthropic
-        self.client = anthropic.Anthropic()  # Uses ANTHROPIC_API_KEY env var
+        self.client = anthropic.Anthropic()
         self.model = model
     
     def generate(self, query: str, context_chunks: list[RetrievedChunk], memory_context: str = "") -> GeneratedAnswer:
+        from src.analytics import calculate_claude_cost
+        
         context = self._format_context(context_chunks)
         
         if memory_context:
-            prompt = f"{memory_context}\n\n<context>\n{context}\n</context>\n\nQuestion: {query}\n\nAnswer based on context and conversation history."
+            prompt = f"{memory_context}\n\n<context>\n{context}\n</context>\n\nQuestion: {query}\n\nAnswer based on context and history."
         else:
             prompt = f"<context>\n{context}\n</context>\n\nQuestion: {query}\n\nAnswer based on the context."
         
@@ -95,11 +99,18 @@ class ClaudeGenerator:
             messages=[{"role": "user", "content": prompt}],
         )
         
+        input_tokens = response.usage.input_tokens
+        output_tokens = response.usage.output_tokens
+        cost = calculate_claude_cost(self.model, input_tokens, output_tokens)
+        
         return GeneratedAnswer(
             answer=response.content[0].text,
             sources=context_chunks,
             query=query,
             model=f"claude/{self.model}",
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cost_usd=cost,
         )
     
     def _format_context(self, chunks: list[RetrievedChunk]) -> str:
@@ -120,21 +131,12 @@ class ClaudeGenerator:
 
 
 class Generator:
-    """Unified generator supporting multiple LLM backends."""
-    
     def __init__(self, backend: str = "ollama", model: str = None):
-        """
-        Initialize generator.
-        
-        Args:
-            backend: "ollama" (local, free) or "claude" (API, better quality)
-            model: Model name (optional, uses defaults)
-        """
         self.backend = backend
         
         if backend == "claude":
             if not os.environ.get("ANTHROPIC_API_KEY"):
-                raise ValueError("ANTHROPIC_API_KEY environment variable required for Claude")
+                raise ValueError("ANTHROPIC_API_KEY required for Claude")
             self._generator = ClaudeGenerator(model or "claude-sonnet-4-20250514")
         else:
             self._generator = OllamaGenerator(model or settings.ollama_model)
@@ -147,7 +149,6 @@ class Generator:
 
 
 def check_llm_available(backend: str = "ollama", model: str = None) -> bool:
-    """Check if LLM is available."""
     if backend == "claude":
         return bool(os.environ.get("ANTHROPIC_API_KEY"))
     else:
