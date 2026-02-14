@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Mystic RAG - Interview Cheat Sheet</title>
+    <style>
+        body { font-family: Arial, sans-serif; max-width: 900px; margin: 0 auto; padding: 20px; line-height: 1.6; }
+        h1 { color: #6B46C1; border-bottom: 3px solid #6B46C1; padding-bottom: 10px; }
+        h2 { color: #4A5568; margin-top: 30px; border-left: 4px solid #6B46C1; padding-left: 10px; }
+        h3 { color: #2D3748; }
+        pre { background: #1A202C; color: #E2E8F0; padding: 15px; border-radius: 8px; }
+        table { border-collapse: collapse; width: 100%; margin: 15px 0; }
+        th, td { border: 1px solid #E2E8F0; padding: 10px; text-align: left; }
+        th { background: #6B46C1; color: white; }
+        tr:nth-child(even) { background: #F7FAFC; }
+        blockquote { border-left: 4px solid #6B46C1; margin: 15px 0; padding: 10px 20px; background: #F7FAFC; font-style: italic; }
+        .links { background: #EBF8FF; padding: 15px; border-radius: 8px; margin: 20px 0; }
+        .pitch { background: #F0FFF4; padding: 20px; border-radius: 8px; border-left: 4px solid #38A169; }
+    </style>
+</head>
+<body>
+    <h1>Mystic RAG - Interview Cheat Sheet</h1>
+    <div class="links">
+        <strong>Quick Links:</strong><br>
+        <a href="https://rag.alphonzojonesjr.com">Live Demo</a> |
+        <a href="https://rag-api.alphonzojonesjr.com/docs">API Docs</a> |
+        <a href="https://github.com/Newbigfonsz/rag-demo">GitHub</a>
+    </div>
+    <h2>30-Second Pitch</h2>
+    <div class="pitch">"I built a production RAG system from scratch that combines semantic search with LLM generation. It features two-stage retrieval with cross-encoder reranking, supports both local and cloud LLMs, includes an analytics dashboard for monitoring costs and latency, and uses RAGAS evaluation to measure answer quality."</div>
+    <h2>Architecture Flow</h2>
+    <pre>User Query → Embedding → Vector Search (top 15) → Reranking (top 5) → LLM → Analytics → Response</pre>
+    <h2>Key Metrics</h2>
+    <table>
+        <tr><th>Metric</th><th>Value</th><th>Talking Point</th></tr>
+        <tr><td>Documents</td><td>27</td><td>Custom knowledge base</td></tr>
+        <tr><td>Chunks</td><td>402</td><td>Markdown-aware chunking</td></tr>
+        <tr><td>Reranking Improvement</td><td>0.7 to 7.2</td><td>10x better scores</td></tr>
+        <tr><td>Cost per Query</td><td>$0.003</td><td>Claude Sonnet</td></tr>
+        <tr><td>RAGAS Score</td><td>0.42</td><td>Room to improve</td></tr>
+    </table>
+    <h2>Demo Script (5 min)</h2>
+    <ol>
+        <li>Open https://rag.alphonzojonesjr.com</li>
+        <li>Ask: "What does it mean to be a Dragon?"</li>
+        <li>Follow-up: "What careers suit that sign?" (shows memory)</li>
+        <li>Click thumbs up (human feedback)</li>
+        <li>Show API docs and GitHub</li>
+    </ol>
+    <h2>Tech Stack</h2>
+    <table>
+        <tr><th>Layer</th><th>Technology</th></tr>
+        <tr><td>Embeddings</td><td>nomic-embed-text (Ollama)</td></tr>
+        <tr><td>Vector DB</td><td>Qdrant</td></tr>
+        <tr><td>Reranker</td><td>ms-marco-MiniLM</td></tr>
+        <tr><td>LLM</td><td>Llama 3.2 + Claude</td></tr>
+        <tr><td>API</td><td>FastAPI</td></tr>
+        <tr><td>Infra</td><td>Docker, Tesla P4, Cloudflare</td></tr>
+    </table>
+    <h2>Strengths to Emphasize</h2>
+    <ul>
+        <li><strong>End-to-end ownership</strong> - Ingestion to deployment</li>
+        <li><strong>Production mindset</strong> - Analytics, Docker, HTTPS</li>
+        <li><strong>ML engineering</strong> - Retrieval optimization</li>
+        <li><strong>Cost awareness</strong> - Track API spend</li>
+        <li><strong>Evaluation rigor</strong> - RAGAS metrics</li>
+    </ul>
+    <p style="text-align: center;"><strong>Good luck!</strong></p>
+</body>
+</html>
