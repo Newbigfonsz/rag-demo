@@ -1,5 +1,11 @@
 """Streamlit Web UI with reranking."""
 
+import sys
+from pathlib import Path
+
+# Add project root to path
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+
 import streamlit as st
 import time
 
@@ -30,8 +36,7 @@ def main():
         st.divider()
         if st.button("Clear Chat & Memory", use_container_width=True):
             st.session_state.messages = []
-            if "pipeline" in st.session_state:
-                st.session_state.pipeline.clear_memory()
+            st.cache_resource.clear()
             st.rerun()
     
     if not check_llm_available():

@@ -1,4 +1,4 @@
-"""RAG pipeline with reranking and memory."""
+"""RAG pipeline with reranking, memory, and multi-LLM support."""
 
 from dataclasses import dataclass
 from typing import Generator as GenType
@@ -26,9 +26,19 @@ class RAGResponse:
 
 
 class RAGPipeline:
-    def __init__(self, use_reranker: bool = True):
+    """RAG pipeline with reranking, memory, and LLM selection."""
+    
+    def __init__(self, use_reranker: bool = True, llm_backend: str = "ollama"):
+        """
+        Initialize pipeline.
+        
+        Args:
+            use_reranker: Enable cross-encoder reranking
+            llm_backend: "ollama" (local, free) or "claude" (API, better)
+        """
         self.retriever = HybridRetriever()
-        self.generator = Generator()
+        self.llm_backend = llm_backend
+        self.generator = Generator(backend=llm_backend)
         self.console = Console()
         self.use_reranker = use_reranker
         self.reranker = None
@@ -87,6 +97,11 @@ class RAGPipeline:
     def clear_memory(self):
         self.memory = []
     
+    def switch_llm(self, backend: str):
+        """Switch LLM backend (ollama or claude)."""
+        self.llm_backend = backend
+        self.generator = Generator(backend=backend)
+    
     def query_streaming(self, question: str, top_k: int = None) -> GenType[str, None, None]:
         top_k = top_k or settings.rerank_top_k
         retrieve_k = top_k * 3 if self.use_reranker else top_k
@@ -97,3 +112,7 @@ class RAGPipeline:
             chunks = chunks[:top_k]
         for token in self.generator.generate_streaming(question, chunks):
             yield token
+
+
+def create_pipeline(use_reranker: bool = True, llm_backend: str = "ollama") -> RAGPipeline:
+    return RAGPipeline(use_reranker=use_reranker, llm_backend=llm_backend)
