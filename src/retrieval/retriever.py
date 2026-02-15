@@ -1,11 +1,11 @@
-"""Hybrid retriever with better error handling."""
+"""Hybrid retriever with error handling."""
 
 from dataclasses import dataclass
 from qdrant_client import QdrantClient
 from qdrant_client.models import SearchParams
 
 from src.config import settings
-from src.ingestion.embedder import Embedder
+from src.ingestion.embedder import OllamaEmbedder
 
 @dataclass
 class RetrievedChunk:
@@ -17,7 +17,7 @@ class RetrievedChunk:
 class HybridRetriever:
     def __init__(self):
         self.client = QdrantClient(host=settings.qdrant_host, port=settings.qdrant_port)
-        self.embedder = Embedder()
+        self.embedder = OllamaEmbedder(model="nomic-embed-text")
         self.collection = settings.collection_name
     
     def vector_search(self, query: str, top_k: int = 10) -> list[RetrievedChunk]:
@@ -47,7 +47,3 @@ class HybridRetriever:
                 metadata=r.payload
             ))
         return chunks
-    
-    def hybrid_search(self, query: str, top_k: int = 10, vector_weight: float = 0.7) -> list[RetrievedChunk]:
-        """Combine vector search with keyword matching."""
-        return self.vector_search(query, top_k)
