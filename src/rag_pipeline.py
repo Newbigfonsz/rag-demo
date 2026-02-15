@@ -1,16 +1,15 @@
 """RAG pipeline with caching, retry, fallback, and alerting."""
 
 from dataclasses import dataclass
-from typing import Generator as GenType, Optional
+from typing import Optional
 import time
 from rich.console import Console
 
 from src.config import settings
 from src.retrieval.retriever import HybridRetriever, RetrievedChunk
-from src.generation.generator import Generator, alert_manager
+from src.generation.generator import Generator
 from src.analytics import QueryMetrics
 from src.retrieval.query_rewriter import get_rewriter
-from src.retrieval.cache import get_cache
 
 @dataclass
 class Message:
@@ -36,14 +35,12 @@ class RAGResponse:
     retries: int = 0
 
 class RAGPipeline:
-    def __init__(self, use_reranker: bool = True, llm_backend: str = "ollama", use_cache: bool = True):
+    def __init__(self, use_reranker: bool = True, llm_backend: str = "ollama", use_cache: bool = False):
         self.retriever = HybridRetriever()
         self.llm_backend = llm_backend
-        self.generator = Generator(backend=llm_backend, auto_fallback=True, max_retries=3)
+        self.generator = Generator(backend=llm_backend)
         self.console = Console()
         self.use_reranker = use_reranker
-        self.use_cache = use_cache
-        self.cache = get_cache() if use_cache else None
         self.reranker = None
         self.memory: list[Message] = []
         self.max_memory: int = 10
@@ -60,9 +57,6 @@ class RAGPipeline:
     def query(self, question: str, top_k: int = None, use_memory: bool = True, show_sources: bool = True, rewrite_query: bool = True, stream: bool = False) -> RAGResponse:
         start_time = time.time()
         top_k = top_k or settings.rerank_top_k
-        cached = False
-        used_fallback = False
-        retries = 0
         
         # Query rewriting
         rewritten_query = None
@@ -73,29 +67,9 @@ class RAGPipeline:
                 rewritten_query = rewritten
                 search_query = rewritten
         
-        # Check cache first
-        if self.use_cache and self.cache and not use_memory:
-            cached_response = self.cache.get(search_query)
-            if cached_response:
-                latency_ms = (time.time() - start_time) * 1000
-                return RAGResponse(
-                    query=question,
-                    answer=cached_response.answer,
-                    sources=[],
-                    retrieval_scores=[],
-                    model=cached_response.model + " (cached)",
-                    reranked=False,
-                    latency_ms=latency_ms,
-                    cached=True,
-                    rewritten_query=rewritten_query
-                )
-        
         # Retrieve
         retrieve_k = top_k * 3 if self.use_reranker else top_k
         chunks = self.retriever.vector_search(search_query, top_k=retrieve_k)
-        
-        if not chunks:
-            alert_manager.send_alert("warning", "No chunks retrieved", {"query": question[:50]})
         
         # Rerank
         reranked = False
@@ -108,29 +82,20 @@ class RAGPipeline:
         # Memory context
         memory_context = self._format_memory() if use_memory and self.memory else ""
         
-        # Generate (with retry and fallback)
+        # Generate
         generated = self.generator.generate(question, chunks, memory_context=memory_context)
-        used_fallback = generated.used_fallback
-        retries = generated.retries
+        used_fallback = getattr(generated, 'used_fallback', False)
+        retries = getattr(generated, 'retries', 0)
         
         # Calculate latency
         latency_ms = (time.time() - start_time) * 1000
-        
-        # Cache the response
-        if self.use_cache and self.cache and not use_memory and not cached:
-            self.cache.set(
-                search_query,
-                generated.answer,
-                [c.citation for c in chunks],
-                generated.model
-            )
         
         # Log to analytics
         metrics = QueryMetrics(
             query=question,
             answer=generated.answer,
             model=generated.model,
-            llm_backend=self.llm_backend if not used_fallback else "claude (fallback)",
+            llm_backend=self.llm_backend,
             retrieval_scores=[c.score for c in chunks],
             sources=[c.citation for c in chunks],
             latency_ms=latency_ms,
@@ -161,7 +126,6 @@ class RAGPipeline:
             cost_usd=generated.cost_usd,
             query_id=query_id,
             rewritten_query=rewritten_query,
-            cached=cached,
             used_fallback=used_fallback,
             retries=retries
         )
@@ -180,12 +144,7 @@ class RAGPipeline:
     
     def switch_llm(self, backend: str):
         self.llm_backend = backend
-        self.generator = Generator(backend=backend, auto_fallback=True)
-    
-    def get_cache_stats(self) -> dict:
-        if self.cache:
-            return self.cache.get_stats()
-        return {}
+        self.generator = Generator(backend=backend)
 
 def create_pipeline(use_reranker: bool = True, llm_backend: str = "ollama") -> RAGPipeline:
     return RAGPipeline(use_reranker=use_reranker, llm_backend=llm_backend)

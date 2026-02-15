@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from qdrant_client import QdrantClient
 from qdrant_client.models import SearchParams
 
-from src.config import settings
 from src.ingestion.embedder import OllamaEmbedder
 
 @dataclass
@@ -16,9 +15,9 @@ class RetrievedChunk:
 
 class HybridRetriever:
     def __init__(self):
-        self.client = QdrantClient(host=settings.qdrant_host, port=settings.qdrant_port)
+        self.client = QdrantClient(host="qdrant", port=6333)
         self.embedder = OllamaEmbedder(model="nomic-embed-text")
-        self.collection = settings.collection_name
+        self.collection = "mystic_rag"
     
     def vector_search(self, query: str, top_k: int = 10) -> list[RetrievedChunk]:
         try:
