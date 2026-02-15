@@ -1,4 +1,4 @@
-"""FastAPI with health checks."""
+"""FastAPI with health checks, cache stats, and alerts."""
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
@@ -6,7 +6,8 @@ import ollama
 from qdrant_client import QdrantClient
 
 from src.rag_pipeline import RAGPipeline
-from src.generation.generator import check_llm_available
+from src.generation.generator import check_llm_available, alert_manager
+from src.retrieval.cache import get_cache
 
 app = FastAPI(title="Mystic RAG API", version="2.0")
 
@@ -14,7 +15,6 @@ class QueryRequest(BaseModel):
     question: str
     top_k: int = 5
     use_memory: bool = False
-    llm_backend: str = "ollama"
 
 class QueryResponse(BaseModel):
     answer: str
@@ -22,20 +22,21 @@ class QueryResponse(BaseModel):
     model: str
     latency_ms: float
     cost_usd: float
+    cached: bool = False
+    used_fallback: bool = False
 
 pipeline = None
 
 @app.on_event("startup")
 def startup():
     global pipeline
-    pipeline = RAGPipeline(use_reranker=True, llm_backend="ollama")
+    pipeline = RAGPipeline(use_reranker=True, llm_backend="ollama", use_cache=True)
 
 @app.get("/health")
 def health_check():
     """Full system health check."""
     status = {"status": "healthy", "components": {}}
     
-    # Check Qdrant
     try:
         client = QdrantClient(host="qdrant", port=6333)
         client.get_collections()
@@ -44,7 +45,6 @@ def health_check():
         status["components"]["qdrant"] = f"error: {e}"
         status["status"] = "degraded"
     
-    # Check Ollama
     try:
         ollama.list()
         status["components"]["ollama"] = "ok"
@@ -52,18 +52,32 @@ def health_check():
         status["components"]["ollama"] = f"error: {e}"
         status["status"] = "degraded"
     
-    # Check Claude (optional)
     if check_llm_available("claude"):
-        status["components"]["claude"] = "ok"
+        status["components"]["claude_fallback"] = "ready"
     else:
-        status["components"]["claude"] = "not configured"
+        status["components"]["claude_fallback"] = "not configured"
     
     return status
 
 @app.get("/health/quick")
 def quick_health():
-    """Quick health check for load balancers."""
     return {"status": "ok"}
+
+@app.get("/stats")
+def get_stats():
+    """Get cache and alert stats."""
+    cache = get_cache()
+    return {
+        "cache": cache.get_stats(),
+        "recent_alerts": alert_manager.get_recent_alerts(5)
+    }
+
+@app.post("/cache/clear")
+def clear_cache():
+    """Clear expired cache entries."""
+    cache = get_cache()
+    cleared = cache.clear_expired()
+    return {"cleared": cleared}
 
 @app.post("/query", response_model=QueryResponse)
 def query(request: QueryRequest):
@@ -81,11 +95,14 @@ def query(request: QueryRequest):
             sources=[s.citation for s in response.sources],
             model=response.model,
             latency_ms=response.latency_ms,
-            cost_usd=response.cost_usd
+            cost_usd=response.cost_usd,
+            cached=response.cached,
+            used_fallback=response.used_fallback
         )
     except Exception as e:
+        alert_manager.send_alert("error", f"Query failed: {e}", {"question": request.question[:50]})
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/")
 def root():
-    return {"message": "Mystic RAG API", "docs": "/docs"}
+    return {"message": "Mystic RAG API v2.0", "features": ["retry", "fallback", "cache", "alerts"]}
