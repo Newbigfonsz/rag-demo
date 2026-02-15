@@ -1,161 +1,96 @@
-"""
-LLM generation with Ollama and Claude support + token tracking.
-"""
+"""Generator with automatic fallback."""
 
 import os
 from dataclasses import dataclass
-from src.config import settings
-from src.retrieval.retriever import RetrievedChunk
+import ollama
+from anthropic import Anthropic
 
+CLAUDE_INPUT_COST = 3.00 / 1_000_000
+CLAUDE_OUTPUT_COST = 15.00 / 1_000_000
+
+def calculate_claude_cost(input_tokens: int, output_tokens: int) -> float:
+    return (input_tokens * CLAUDE_INPUT_COST) + (output_tokens * CLAUDE_OUTPUT_COST)
 
 @dataclass
 class GeneratedAnswer:
     answer: str
-    sources: list[RetrievedChunk]
-    query: str
     model: str
     input_tokens: int = 0
     output_tokens: int = 0
     cost_usd: float = 0.0
 
-
-SYSTEM_PROMPT = """You are a knowledgeable assistant specializing in Chinese zodiac signs and numerology.
-
-RULES:
-1. ONLY use information from the provided context
-2. If the context doesn't have the answer, say "I don't have information about that"
-3. Be specific about which zodiac sign or life path number you're discussing
-4. If there's conversation history, use it to understand follow-up questions
-5. Keep answers conversational but informative"""
-
-
-class OllamaGenerator:
-    def __init__(self, model: str = None):
-        import ollama
-        self.ollama = ollama
-        self.model = model or settings.ollama_model
-    
-    def generate(self, query: str, context_chunks: list[RetrievedChunk], memory_context: str = "") -> GeneratedAnswer:
-        context = self._format_context(context_chunks)
-        
-        if memory_context:
-            prompt = f"{memory_context}\n\n<context>\n{context}\n</context>\n\nQuestion: {query}\n\nAnswer based on context and history."
-        else:
-            prompt = f"<context>\n{context}\n</context>\n\nQuestion: {query}\n\nAnswer based on the context."
-        
-        response = self.ollama.chat(
-            model=self.model,
-            messages=[{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": prompt}],
-            options={"num_predict": 1024, "temperature": 0.7},
-        )
-        
-        return GeneratedAnswer(
-            answer=response["message"]["content"],
-            sources=context_chunks,
-            query=query,
-            model=f"ollama/{self.model}",
-            input_tokens=response.get("prompt_eval_count", 0),
-            output_tokens=response.get("eval_count", 0),
-            cost_usd=0.0,  # Ollama is free
-        )
-    
-    def _format_context(self, chunks: list[RetrievedChunk]) -> str:
-        return "\n\n---\n\n".join([f"[Source {i}: {c.citation}]\n{c.content}" for i, c in enumerate(chunks, 1)])
-    
-    def generate_streaming(self, query: str, context_chunks: list[RetrievedChunk], temperature: float = 0.7):
-        context = self._format_context(context_chunks)
-        prompt = f"<context>\n{context}\n</context>\n\nQuestion: {query}\n\nAnswer:"
-        stream = self.ollama.chat(
-            model=self.model,
-            messages=[{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": prompt}],
-            options={"temperature": temperature},
-            stream=True,
-        )
-        for chunk in stream:
-            if "message" in chunk and "content" in chunk["message"]:
-                yield chunk["message"]["content"]
-
-
-class ClaudeGenerator:
-    def __init__(self, model: str = "claude-sonnet-4-20250514"):
-        import anthropic
-        self.client = anthropic.Anthropic()
-        self.model = model
-    
-    def generate(self, query: str, context_chunks: list[RetrievedChunk], memory_context: str = "") -> GeneratedAnswer:
-        from src.analytics import calculate_claude_cost
-        
-        context = self._format_context(context_chunks)
-        
-        if memory_context:
-            prompt = f"{memory_context}\n\n<context>\n{context}\n</context>\n\nQuestion: {query}\n\nAnswer based on context and history."
-        else:
-            prompt = f"<context>\n{context}\n</context>\n\nQuestion: {query}\n\nAnswer based on the context."
-        
-        response = self.client.messages.create(
-            model=self.model,
-            max_tokens=1024,
-            system=SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        
-        input_tokens = response.usage.input_tokens
-        output_tokens = response.usage.output_tokens
-        cost = calculate_claude_cost(self.model, input_tokens, output_tokens)
-        
-        return GeneratedAnswer(
-            answer=response.content[0].text,
-            sources=context_chunks,
-            query=query,
-            model=f"claude/{self.model}",
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            cost_usd=cost,
-        )
-    
-    def _format_context(self, chunks: list[RetrievedChunk]) -> str:
-        return "\n\n---\n\n".join([f"[Source {i}: {c.citation}]\n{c.content}" for i, c in enumerate(chunks, 1)])
-    
-    def generate_streaming(self, query: str, context_chunks: list[RetrievedChunk], temperature: float = 0.7):
-        context = self._format_context(context_chunks)
-        prompt = f"<context>\n{context}\n</context>\n\nQuestion: {query}\n\nAnswer:"
-        
-        with self.client.messages.stream(
-            model=self.model,
-            max_tokens=1024,
-            system=SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": prompt}],
-        ) as stream:
-            for text in stream.text_stream:
-                yield text
-
-
-class Generator:
-    def __init__(self, backend: str = "ollama", model: str = None):
-        self.backend = backend
-        
-        if backend == "claude":
-            if not os.environ.get("ANTHROPIC_API_KEY"):
-                raise ValueError("ANTHROPIC_API_KEY required for Claude")
-            self._generator = ClaudeGenerator(model or "claude-sonnet-4-20250514")
-        else:
-            self._generator = OllamaGenerator(model or settings.ollama_model)
-    
-    def generate(self, query: str, context_chunks: list[RetrievedChunk], memory_context: str = "", **kwargs) -> GeneratedAnswer:
-        return self._generator.generate(query, context_chunks, memory_context=memory_context)
-    
-    def generate_streaming(self, query: str, context_chunks: list[RetrievedChunk], **kwargs):
-        return self._generator.generate_streaming(query, context_chunks, **kwargs)
-
-
-def check_llm_available(backend: str = "ollama", model: str = None) -> bool:
-    if backend == "claude":
-        return bool(os.environ.get("ANTHROPIC_API_KEY"))
-    else:
+def check_llm_available(backend: str = "ollama") -> bool:
+    if backend == "ollama":
         try:
-            import ollama
-            model = model or settings.ollama_model
-            ollama.chat(model=model, messages=[{"role": "user", "content": "Hi"}], options={"num_predict": 5})
+            ollama.list()
             return True
         except:
             return False
+    elif backend == "claude":
+        return bool(os.environ.get("ANTHROPIC_API_KEY"))
+    return False
+
+class Generator:
+    def __init__(self, backend: str = "ollama", auto_fallback: bool = True):
+        self.backend = backend
+        self.auto_fallback = auto_fallback
+        self.model = "llama3.2" if backend == "ollama" else "claude-sonnet-4-20250514"
+        if backend == "claude" or auto_fallback:
+            api_key = os.environ.get("ANTHROPIC_API_KEY")
+            self.claude_client = Anthropic(api_key=api_key) if api_key else None
+    
+    def generate(self, query: str, chunks: list, memory_context: str = "") -> GeneratedAnswer:
+        context = "\n\n".join([f"[{c.citation}]\n{c.text}" for c in chunks])
+        system_prompt = """You are a helpful assistant specializing in Chinese zodiac and numerology.
+Answer based ONLY on the provided context. If the context doesn't contain the answer, say so.
+Be concise but informative."""
+        
+        user_prompt = f"{memory_context}\n\nContext:\n{context}\n\nQuestion: {query}" if memory_context else f"Context:\n{context}\n\nQuestion: {query}"
+        
+        # Try primary backend
+        if self.backend == "ollama":
+            try:
+                return self._generate_ollama(system_prompt, user_prompt)
+            except Exception as e:
+                if self.auto_fallback and self.claude_client:
+                    print(f"[FALLBACK] Ollama failed ({e}), using Claude")
+                    return self._generate_claude(system_prompt, user_prompt)
+                raise
+        else:
+            return self._generate_claude(system_prompt, user_prompt)
+    
+    def _generate_ollama(self, system_prompt: str, user_prompt: str, timeout: int = 60) -> GeneratedAnswer:
+        response = ollama.chat(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            options={"num_predict": 500}
+        )
+        return GeneratedAnswer(
+            answer=response["message"]["content"],
+            model=self.model,
+            input_tokens=response.get("prompt_eval_count", 0),
+            output_tokens=response.get("eval_count", 0),
+            cost_usd=0.0
+        )
+    
+    def _generate_claude(self, system_prompt: str, user_prompt: str) -> GeneratedAnswer:
+        if not self.claude_client:
+            raise ValueError("Claude API key not set")
+        response = self.claude_client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=500,
+            system=system_prompt,
+            messages=[{"role": "user", "content": user_prompt}]
+        )
+        input_tokens = response.usage.input_tokens
+        output_tokens = response.usage.output_tokens
+        return GeneratedAnswer(
+            answer=response.content[0].text,
+            model="claude-sonnet-4-20250514",
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cost_usd=calculate_claude_cost(input_tokens, output_tokens)
+        )

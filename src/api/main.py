@@ -1,77 +1,91 @@
-"""FastAPI with reranking."""
+"""FastAPI with health checks."""
 
 from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
-from typing import Optional
-import time
+from pydantic import BaseModel
+import ollama
+from qdrant_client import QdrantClient
 
 from src.rag_pipeline import RAGPipeline
 from src.generation.generator import check_llm_available
 
-app = FastAPI(title="Mystic RAG API", version="1.0.0")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+app = FastAPI(title="Mystic RAG API", version="2.0")
 
-_pipeline: Optional[RAGPipeline] = None
+class QueryRequest(BaseModel):
+    question: str
+    top_k: int = 5
+    use_memory: bool = False
+    llm_backend: str = "ollama"
 
-def get_pipeline() -> RAGPipeline:
-    global _pipeline
-    if _pipeline is None:
-        _pipeline = RAGPipeline(use_reranker=True)
-    return _pipeline
-
-
-class ChatRequest(BaseModel):
-    question: str = Field(..., min_length=1)
-    top_k: int = Field(default=5, ge=1, le=20)
-    use_memory: bool = True
-
-
-class Source(BaseModel):
-    content: str
-    citation: str
-    score: float
-
-
-class ChatResponse(BaseModel):
+class QueryResponse(BaseModel):
     answer: str
-    sources: list[Source]
-    query: str
+    sources: list[str]
     model: str
     latency_ms: float
-    reranked: bool
+    cost_usd: float
 
+pipeline = None
 
-@app.get("/")
-async def root():
-    return {"name": "Mystic RAG API", "docs": "/docs", "features": ["reranking", "memory"]}
-
+@app.on_event("startup")
+def startup():
+    global pipeline
+    pipeline = RAGPipeline(use_reranker=True, llm_backend="ollama")
 
 @app.get("/health")
-async def health():
-    return {"status": "healthy", "llm": check_llm_available()}
-
-
-@app.post("/chat", response_model=ChatResponse)
-async def chat(request: ChatRequest):
-    start = time.time()
+def health_check():
+    """Full system health check."""
+    status = {"status": "healthy", "components": {}}
+    
+    # Check Qdrant
     try:
-        pipeline = get_pipeline()
-        response = pipeline.query(request.question, top_k=request.top_k, use_memory=request.use_memory)
-        
-        return ChatResponse(
+        client = QdrantClient(host="qdrant", port=6333)
+        client.get_collections()
+        status["components"]["qdrant"] = "ok"
+    except Exception as e:
+        status["components"]["qdrant"] = f"error: {e}"
+        status["status"] = "degraded"
+    
+    # Check Ollama
+    try:
+        ollama.list()
+        status["components"]["ollama"] = "ok"
+    except Exception as e:
+        status["components"]["ollama"] = f"error: {e}"
+        status["status"] = "degraded"
+    
+    # Check Claude (optional)
+    if check_llm_available("claude"):
+        status["components"]["claude"] = "ok"
+    else:
+        status["components"]["claude"] = "not configured"
+    
+    return status
+
+@app.get("/health/quick")
+def quick_health():
+    """Quick health check for load balancers."""
+    return {"status": "ok"}
+
+@app.post("/query", response_model=QueryResponse)
+def query(request: QueryRequest):
+    if pipeline is None:
+        raise HTTPException(status_code=503, detail="Pipeline not ready")
+    
+    try:
+        response = pipeline.query(
+            request.question,
+            top_k=request.top_k,
+            use_memory=request.use_memory
+        )
+        return QueryResponse(
             answer=response.answer,
-            sources=[Source(content=c.content[:400], citation=c.citation, score=response.retrieval_scores[i]) for i, c in enumerate(response.sources)],
-            query=request.question,
+            sources=[s.citation for s in response.sources],
             model=response.model,
-            latency_ms=round((time.time() - start) * 1000, 2),
-            reranked=response.reranked,
+            latency_ms=response.latency_ms,
+            cost_usd=response.cost_usd
         )
     except Exception as e:
-        raise HTTPException(500, str(e))
+        raise HTTPException(status_code=500, detail=str(e))
 
-
-@app.post("/clear-memory")
-async def clear_memory():
-    get_pipeline().clear_memory()
-    return {"status": "memory cleared"}
+@app.get("/")
+def root():
+    return {"message": "Mystic RAG API", "docs": "/docs"}
